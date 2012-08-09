@@ -63,6 +63,7 @@ static CFIndex WriteDataToStream(NSData* data, CFWriteStreamRef stream) {
     return totalBytesWritten;
 }
 
+static NSMutableArray* _abortTriggered = nil;
 @implementation CDVFileTransfer
 
 - (NSString*) escapePathComponentForUrlString:(NSString*)urlString
@@ -239,11 +240,13 @@ static CFIndex WriteDataToStream(NSData* data, CFWriteStreamRef stream) {
 - (CDVFileTransferDelegate*) delegateForUploadCommand:(CDVInvokedUrlCommand *)command {
     NSString* target = [command.arguments objectAtIndex:0];
     NSString* server = [command.arguments objectAtIndex:1];
+    NSString* objectId = [command.arguments objectAtIndex:9];
 
     CDVFileTransferDelegate* delegate = [[CDVFileTransferDelegate alloc] init];
 	delegate.command = self;
-    delegate.direction = CDV_TRANSFER_UPLOAD;
     delegate.callbackId = command.callbackId;
+    delegate.direction = CDV_TRANSFER_UPLOAD;
+    delegate.objectId = objectId;
     delegate.source = server;
     delegate.target = target;
     return delegate;
@@ -268,13 +271,22 @@ static CFIndex WriteDataToStream(NSData* data, CFWriteStreamRef stream) {
     NSData* fileData = [self fileDataForUploadCommand:command];
     NSURLRequest* req = [self requestForUploadCommand:command fileData:fileData];
     CDVFileTransferDelegate* delegate = [self delegateForUploadCommand:command];
-	[NSURLConnection connectionWithRequest:req delegate:delegate];
+    [NSURLConnection connectionWithRequest:req delegate:delegate];
+}
+
+- (void) abort:(CDVInvokedUrlCommand*)command {
+    NSString* objectId = [command.arguments objectAtIndex:0];
+    if(_abortTriggered == nil){
+        _abortTriggered = [NSMutableArray array];
+    }
+    [_abortTriggered addObject:objectId];
 }
 
 - (void) download:(CDVInvokedUrlCommand*)command {
     DLog(@"File Transfer downloading file...");
     NSString * sourceUrl = [command.arguments objectAtIndex:0];
     NSString * filePath = [command.arguments objectAtIndex:1];
+    NSString * objectId = [command.arguments objectAtIndex:2];
     CDVPluginResult *result = nil;
     CDVFileTransferError errorCode = 0;
 
@@ -310,6 +322,7 @@ static CFIndex WriteDataToStream(NSData* data, CFWriteStreamRef stream) {
 	delegate.command = self;
     delegate.direction = CDV_TRANSFER_DOWNLOAD;
     delegate.callbackId = command.callbackId;
+    delegate.objectId = objectId;
     delegate.source = sourceUrl;
     delegate.target = filePath;
 	
@@ -347,7 +360,7 @@ static CFIndex WriteDataToStream(NSData* data, CFWriteStreamRef stream) {
 
 @implementation CDVFileTransferDelegate
 
-@synthesize callbackId, source, target, responseData, command, bytesWritten, direction, responseCode;
+@synthesize callbackId, source, target, responseData, command, bytesWritten, direction, responseCode, objectId;
 
 
 - (void)connectionDidFinishLoading:(NSURLConnection *)connection 
@@ -444,10 +457,24 @@ static CFIndex WriteDataToStream(NSData* data, CFWriteStreamRef stream) {
 
 - (void)connection:(NSURLConnection *)connection didReceiveData:(NSData *)data
 {
+    if([_abortTriggered containsObject:self.objectId])
+    {
+        NSLog(@"Aborted File Transfer");
+        [connection cancel];
+        [_abortTriggered removeObject:self.objectId];
+        return;
+    }
     [self.responseData appendData:data];
 }
 - (void)connection:(NSURLConnection *)connection didSendBodyData:(NSInteger)bytesWritten totalBytesWritten:(NSInteger)totalBytesWritten totalBytesExpectedToWrite:(NSInteger)totalBytesExpectedToWrite
 {
+    if([_abortTriggered containsObject:self.objectId])
+    {
+        NSLog(@"Aborted File Transfer");
+        [connection cancel];
+        [_abortTriggered removeObject:self.objectId];
+        return;
+    }
     self.bytesWritten = totalBytesWritten;
 }
 /* TESTING ONLY CODE
