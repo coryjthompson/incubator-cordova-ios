@@ -63,8 +63,8 @@ static CFIndex WriteDataToStream(NSData* data, CFWriteStreamRef stream) {
     return totalBytesWritten;
 }
 
-static NSMutableArray* _abortTriggered = nil;
 @implementation CDVFileTransfer
+@synthesize activeTransfers;
 
 - (NSString*) escapePathComponentForUrlString:(NSString*)urlString
 {
@@ -270,16 +270,23 @@ static NSMutableArray* _abortTriggered = nil;
     // fileData and req are split into helper functions to ease the unit testing of delegateForUpload.
     NSData* fileData = [self fileDataForUploadCommand:command];
     NSURLRequest* req = [self requestForUploadCommand:command fileData:fileData];
+    
     CDVFileTransferDelegate* delegate = [self delegateForUploadCommand:command];
-    [NSURLConnection connectionWithRequest:req delegate:delegate];
+    delegate.connection = [NSURLConnection connectionWithRequest:req delegate:delegate];
+    
+    if (activeTransfers == nil) {
+        activeTransfers = [[NSMutableDictionary alloc] init];
+    }
+    
+    [activeTransfers setObject:delegate forKey:delegate.objectId];
 }
 
 - (void) abort:(CDVInvokedUrlCommand*)command {
     NSString* objectId = [command.arguments objectAtIndex:0];
-    if(_abortTriggered == nil){
-        _abortTriggered = [NSMutableArray array];
-    }
-    [_abortTriggered addObject:objectId];
+    
+    CDVFileTransferDelegate *delegate = [activeTransfers objectForKey:objectId];
+    [delegate.connection cancel];
+    [activeTransfers removeObjectForKey:objectId];
 }
 
 - (void) download:(CDVInvokedUrlCommand*)command {
@@ -326,7 +333,14 @@ static NSMutableArray* _abortTriggered = nil;
     delegate.source = sourceUrl;
     delegate.target = filePath;
 	
-	[NSURLConnection connectionWithRequest:req delegate:delegate];
+    delegate.connection = [NSURLConnection connectionWithRequest:req delegate:delegate];
+    [activeTransfers setObject: delegate forKey:delegate.objectId];
+    
+    if (activeTransfers == nil) {
+        activeTransfers = [[NSMutableDictionary alloc] init];
+    }
+    
+    [activeTransfers setObject:delegate forKey:delegate.objectId];
 }
 
 -(NSMutableDictionary*) createFileTransferError:(int)code AndSource:(NSString*)source AndTarget:(NSString*)target
@@ -360,7 +374,7 @@ static NSMutableArray* _abortTriggered = nil;
 
 @implementation CDVFileTransferDelegate
 
-@synthesize callbackId, source, target, responseData, command, bytesWritten, direction, responseCode, objectId;
+@synthesize callbackId, connection, source, target, responseData, command, bytesWritten, direction, responseCode, objectId;
 
 
 - (void)connectionDidFinishLoading:(NSURLConnection *)connection 
@@ -376,7 +390,7 @@ static NSMutableArray* _abortTriggered = nil;
     CDVFile * file;
     
     NSLog(@"File Transfer Finished with response code %d", self.responseCode);
-        
+         
     if(self.direction == CDV_TRANSFER_UPLOAD)
     {
         if(self.responseCode >= 200 && self.responseCode < 300)
@@ -440,6 +454,9 @@ static NSMutableArray* _abortTriggered = nil;
     } else {
         [self.command writeJavascript:[result toErrorCallbackString: callbackId]];
     }
+    
+    //remove connection for activeTransfers
+    [command.activeTransfers removeObjectForKey:objectId];
 }
 
 - (void)connection:(NSURLConnection *)connection didReceiveResponse:(NSURLResponse *)response
@@ -452,37 +469,25 @@ static NSMutableArray* _abortTriggered = nil;
 {
     CDVPluginResult* result = [CDVPluginResult resultWithStatus: CDVCommandStatus_OK messageAsDictionary: [command createFileTransferError: CONNECTION_ERR AndSource:source AndTarget:target AndHttpStatus: self.responseCode]];
     NSLog(@"File Transfer Error: %@", [error localizedDescription]);
+    
+    //remove connection for activeTransfers
+    [command.activeTransfers removeObjectForKey:objectId];
+    
     [self.command writeJavascript:[result toErrorCallbackString: callbackId]];
 }
 
 - (void)connection:(NSURLConnection *)connection didReceiveData:(NSData *)data
 {
-    if([_abortTriggered containsObject:self.objectId])
-    {
-        NSLog(@"Aborted File Transfer");
-        [connection cancel];
-        [_abortTriggered removeObject:self.objectId];
-        return;
-    }
-    [self.responseData appendData:data];
+        [self.responseData appendData:data];
 }
 - (void)connection:(NSURLConnection *)connection didSendBodyData:(NSInteger)bytesWritten totalBytesWritten:(NSInteger)totalBytesWritten totalBytesExpectedToWrite:(NSInteger)totalBytesExpectedToWrite
 {
-    if([_abortTriggered containsObject:self.objectId])
-    {
-        NSLog(@"Aborted File Transfer");
-        [connection cancel];
-        [_abortTriggered removeObject:self.objectId];
-        return;
-    }
-    
     NSMutableDictionary* uploadProgress = [NSMutableDictionary dictionaryWithCapacity:3];
-    CDVPluginResult* result;
-    
+   
     [uploadProgress setObject:[NSNumber numberWithBool: true] forKey:@"lengthComputable"];
     [uploadProgress setObject:[NSNumber numberWithInt: totalBytesWritten] forKey:@"loaded"];
     [uploadProgress setObject:[NSNumber numberWithInt: totalBytesExpectedToWrite] forKey:@"total"];
-    result = [CDVPluginResult resultWithStatus: CDVCommandStatus_OK messageAsDictionary: uploadProgress ];
+    CDVPluginResult* result = [CDVPluginResult resultWithStatus: CDVCommandStatus_OK messageAsDictionary: uploadProgress ];
     [result setKeepCallbackAsBool:true]; 
     [self.command writeJavascript:[result toSuccessCallbackString: callbackId ]];
     
