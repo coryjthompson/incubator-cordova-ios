@@ -373,6 +373,16 @@ static NSSet* org_apache_cordova_validArrowDirections;
     self.hasPendingOperation = NO;
 }
 
+- (void)navigationController:(UINavigationController *)navigationController willShowViewController:(UIViewController *)viewController animated:(BOOL)animated
+{
+    if([navigationController isKindOfClass:[UIImagePickerController class]]){
+        UIImagePickerController * cameraPicker = (UIImagePickerController*)navigationController;
+        if(![cameraPicker.mediaTypes containsObject:(NSString*) kUTTypeImage]){
+            [viewController.navigationItem setTitle:@"Videos"];
+        }
+    }
+}
+
 - (UIImage*) imageByScalingAndCroppingForSize:(UIImage*)anImage toSize:(CGSize)targetSize
 {
     UIImage *sourceImage = anImage;
